@@ -1,8 +1,0 @@
-services:
-  - type: worker
-    name: vocal-bot
-    env: python
-    buildCommand: ""
-    startCommand: "python bot.py"
-    autoDeploy: false
-    plan: free
