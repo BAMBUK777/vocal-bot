@@ -6,3 +6,6 @@ services:
     buildCommand: ""
     startCommand: "python bot.py"
     autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
