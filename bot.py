@@ -1,9 +1,3 @@
-```python
-# ЧАСТЬ 1 — Импорты и конфигурация
-
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
 import json
 import csv
