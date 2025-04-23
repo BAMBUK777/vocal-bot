@@ -1,35 +1,31 @@
 
 import os
-import json
-import csv
-import logging
+import telebot
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from datetime import datetime, timedelta, date
-from zoneinfo import ZoneInfo
-from threading import Timer
 
-import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+# --- Токен ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+bot = telebot.TeleBot(BOT_TOKEN)
 
-# --- HEALTH CHECK SERVER для Render ---
-class HC(BaseHTTPRequestHandler):
+# --- Пример простейшего хэндлера ---
+@bot.message_handler(commands=["start"])
+def start_message(message):
+    bot.send_message(message.chat.id, "Привет! Бот работает.")
+
+# --- Health-check HTTP сервер ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
 
-def run_hc():
-    HTTPServer(("0.0.0.0", 8000), HC).serve_forever()
+def run_fake_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
 
-threading.Thread(target=run_hc, daemon=True).start()
-
-# --- Минимальный запуск бота ---
-TOKEN = os.getenv("BOT_TOKEN")
-bot = telebot.TeleBot(TOKEN)
-
-@bot.message_handler(commands=["start"])
-def start(m):
-    bot.send_message(m.chat.id, "Бот работает! 🚀")
-
-bot.polling()
+# --- Запуск всего ---
+if __name__ == "__main__":
+    threading.Thread(target=run_fake_server, daemon=True).start()
+    bot.polling(none_stop=True)
