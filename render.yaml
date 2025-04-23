@@ -2,10 +2,9 @@ services:
   - type: worker
     name: vocal-bot
     env: python
-    plan: free
     buildCommand: ""
-    startCommand: "python bot.py"
-    autoDeploy: true
+    startCommand: python bot.py
+    plan: free
     envVars:
       - key: BOT_TOKEN
         sync: false
