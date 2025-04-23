@@ -1,7 +1,27 @@
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# ————— health check server —————
+PORT = int(os.environ.get("PORT", 8000))
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+def run_health_server():
+    HTTPServer(("0.0.0.0", PORT), HealthHandler).serve_forever()
+threading.Thread(target=run_health_server, daemon=True).start()
+# ————— конец health check —————
+
+TOKEN = os.getenv("BOT_TOKEN")
+# … остальной код без изменений …
+
+
+
 
 # === НАСТРОЙКИ ===
 TOKEN = os.getenv("BOT_TOKEN")
