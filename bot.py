@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()  # загружаем переменные из .env
 
 import os
+import time
 import sqlite3
 import logging
 from datetime import datetime, timedelta
@@ -67,18 +68,39 @@ init_db()
 # ---------------- Хранилище промежуточных данных ----------------
 user_data = {}
 
-# ---------------- Меню ----------------
+# ---------------- Главное меню ----------------
 def show_main_menu(chat_id):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add('📝 Записаться на урок', 'Моя запись', '📞 Контакты', '↩️ Назад')
+    kb.add('📝 Записаться на урок', 'Моя запись', '📞 Контакты')
     bot.send_message(chat_id, "Привет! Выберите действие:", reply_markup=kb)
 
 @bot.message_handler(commands=['start'])
 def cmd_start(msg):
     show_main_menu(msg.chat.id)
 
-@bot.message_handler(func=lambda m: m.text == '↩️ Назад')
-def handle_back(msg):
+# ---------------- Контакты ----------------
+@bot.message_handler(func=lambda m: m.text == '📞 Контакты')
+def show_contacts(msg):
+    text = (
+        "<b>Контакты:</b>\n"
+        "📞 Телефон: +995 123 456 789\n"
+        "✉️ Email: example@joolay.vocal\n"
+        "\n🔴🔴🔴🔴🔴🔴🔴🔴🔴\n\n"
+        "<b>Преподаватели:</b>\n"
+        " • <b>Юля</b>\n"
+        " • <b>Торнике</b>\n\n"
+        "<b>Адрес:</b>\n"
+        "Joolay Vocal Studio\n"
+        "2/7, Zaarbriuken Square, Tbilisi\n"
+        "📍 <a href=\"https://maps.app.goo.gl/XtXSVWX2exaRmHpp9\">Посмотреть на карте</a>"
+    )
+    bot.send_message(
+        msg.chat.id, text,
+        parse_mode='HTML',
+        disable_web_page_preview=True,
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    # вернём меню после показа
     show_main_menu(msg.chat.id)
 
 # ---------------- Бронирование урока ----------------
@@ -87,8 +109,9 @@ def choose_teacher(msg):
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton('Юля', callback_data='select_teacher:Юля'),
-        types.InlineKeyboardButton('↩️ Назад', callback_data='back')
+        types.InlineKeyboardButton('Торнике', callback_data='select_teacher:Торнике')
     )
+    kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back'))
     bot.send_message(msg.chat.id, "Выберите преподавателя:", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data == 'back')
@@ -111,7 +134,7 @@ def cb_select_teacher(c):
 
 def process_name(msg):
     if msg.text == '↩️ Назад':
-        return handle_back(msg)
+        return show_main_menu(msg.chat.id)
     uid = msg.from_user.id
     user_data[uid]['fullname'] = msg.text.strip()
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -125,7 +148,7 @@ def process_name(msg):
 
 def process_phone(msg):
     if msg.text == '↩️ Назад':
-        return handle_back(msg)
+        return show_main_menu(msg.chat.id)
     uid = msg.from_user.id
     user_data[uid]['phone'] = msg.text.strip()
     send_date_selection(msg)
@@ -257,4 +280,19 @@ if __name__ == '__main__':
     sched.add_job(send_reminders, 'interval', minutes=1)
     sched.add_job(clean_past_appointments, 'cron', hour=0, minute=0)
     sched.start()
-    bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
+    # сбросим вебхук, чтобы точно работать через getUpdates
+    bot.delete_webhook()
+
+    # непрерывный polling с защитой от ошибок 409 и любых других
+    while True:
+        try:
+            bot.infinity_polling(
+                timeout=60,
+                long_polling_timeout=60,
+                skip_pending=True,
+                non_stop=True
+            )
+        except Exception:
+            logging.exception("Polling упало, перезапускаем через 1 сек…")
+            time.sleep(1)
