@@ -29,7 +29,7 @@ def run_web():
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
-# запускаем Flask в отдельном потоке, чтобы Render Website не засыпал
+# Чтобы Render не засыпал — держим HTTP-сервер постоянно живым
 Thread(target=run_web, daemon=True).start()
 
 # ---------------- Переменные окружения ----------------
@@ -43,7 +43,7 @@ if not TOKEN or not ADMIN_IDS:
 
 # ---------------- Настройка TeleBot ----------------
 bot = telebot.TeleBot(TOKEN)
-bot.remove_webhook()  # сброс старых webhooks
+bot.remove_webhook()  # на всякий — сбросим старый webhook
 
 # ---------------- Инициализация БД ----------------
 def init_db():
@@ -98,7 +98,6 @@ def show_contacts(msg):
         disable_web_page_preview=True,
         reply_markup=types.ReplyKeyboardRemove()
     )
-    # возвращаем главное меню
     show_main_menu(msg.chat.id)
 
 # ---------------- Бронирование урока ----------------
@@ -279,18 +278,12 @@ if __name__ == '__main__':
     sched.add_job(clean_past_appointments, 'cron', hour=0, minute=0)
     sched.start()
 
-    # сбросим вебхук, чтобы точно работать через getUpdates
     bot.delete_webhook()
 
-    # непрерывный polling с автоматическим рестартом при ошибках и длинным таймаутом
+    # теперь без лишнего non_stop — запускаем вечно с автоперезапуском
     while True:
         try:
-            bot.infinity_polling(
-                timeout=60,
-                long_polling_timeout=60,
-                skip_pending=True,
-                non_stop=True
-            )
+            bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
         except Exception:
             logging.exception("Polling упало, перезапускаем через 1 сек…")
             time.sleep(1)
