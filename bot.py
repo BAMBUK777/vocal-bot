@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-load_dotenv()  # Загрузка .env
+load_dotenv()  # загружаем переменные из .env
 
 import os
 import sqlite3
@@ -41,9 +41,9 @@ if not TOKEN or not ADMIN_IDS:
 
 # ---------------- TELEBOT SETUP ----------------
 bot = telebot.TeleBot(TOKEN)
-bot.remove_webhook()  # Сбрасываем старые webhooks, если были
+bot.remove_webhook()  # сбрасываем возможный старый webhook
 
-# ---------------- ИНИЦИАЛИЗАЦИЯ БАЗЫ ----------------
+# ---------------- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ----------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -65,16 +65,16 @@ def init_db():
 
 init_db()
 
-# ---------------- ХРАНИЛИЩЕ ДЛЯ ДИАЛОГА ----------------
+# --------- ХРАНИЛИЩЕ ДАННЫХ ДИАЛОГА ---------
 user_data = {}
 
-# ---------------- ФУНКЦИИ МЕНЮ ----------------
+# --------- ФУНКЦИИ МЕНЮ ---------
 def show_main_menu(chat_id):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     kb.add('📝 Записаться на урок', 'Моя запись', '📞 Контакты', '↩️ Назад')
     bot.send_message(chat_id, "Привет! Выберите действие:", reply_markup=kb)
 
-# ---------------- ОБРАБОТЧИКИ ----------------
+# --------- ОБРАБОТЧИКИ СООБЩЕНИЙ ---------
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     show_main_menu(message.chat.id)
@@ -83,7 +83,6 @@ def cmd_start(message):
 def handle_back(message):
     show_main_menu(message.chat.id)
 
-# Запись на урок
 @bot.message_handler(func=lambda m: m.text == '📝 Записаться на урок')
 def choose_teacher(message):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -138,12 +137,10 @@ def send_date_selection(message):
     for d in range(14):
         day = today + timedelta(days=d)
         if 1 <= day.weekday() <= 4:  # вт–пт
-            kb.add(
-                types.InlineKeyboardButton(
-                    day.strftime('%d/%m'),
-                    callback_data=f"select_date:{day.isoformat()}"
-                )
-            )
+            kb.add(types.InlineKeyboardButton(
+                day.strftime('%d/%m'),
+                callback_data=f"select_date:{day.isoformat()}"
+            ))
     kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back'))
     bot.send_message(message.chat.id, "Выберите дату:", reply_markup=kb)
 
@@ -172,16 +169,15 @@ def cb_select_time(call):
     user_data[uid]['time'] = time_slot
     finalize_appointment(call.message)
 
-# Сохранение и уведомление
 def finalize_appointment(message):
     uid = message.chat.id
     data = user_data.get(uid, {})
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-    INSERT INTO appointments
-      (user_id, fullname, phone, teacher, date, time)
-    VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO appointments
+          (user_id, fullname, phone, teacher, date, time)
+        VALUES (?, ?, ?, ?, ?, ?)
     """, (
         uid,
         data.get('fullname',''),
@@ -200,7 +196,6 @@ def finalize_appointment(message):
         reply_markup=types.ReplyKeyboardRemove()
     )
 
-    # Уведомление админам
     text = (
         f"Новая заявка #{appt_id}\n"
         f"Ученик: {data.get('fullname')}\n"
@@ -216,15 +211,50 @@ def finalize_appointment(message):
     for aid in ADMIN_IDS:
         bot.send_message(aid, text, reply_markup=kb)
 
-# Админ-решения и остальные handlers…
-# (Здесь нужно вставить остальной код из предыдущей версии —
-#  approve/reject, my appointments, cancel flow, reminders, cleanup)
+# --------- Обработка решений админа, «Моя запись», отмены и Контактов
+# (должны идти здесь, как в предыдущей версии кода)...
 
-# ------- ПРАВИЛЬНЫЙ ЗАПУСК -------
+# --------- Напоминания и очистка старых записей ---------
+def send_reminders():
+    now = datetime.now(TIMEZONE)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, fullname, teacher, date, time
+          FROM appointments
+         WHERE status='approved' AND reminder_sent=0
+    """)
+    for appt_id, fullname, teacher, date_iso, time_slot in cursor.fetchall():
+        dt = datetime.strptime(f"{date_iso} {time_slot}", "%Y-%m-%d %H:%M")\
+                    .replace(tzinfo=TIMEZONE)
+        if 0 <= (dt - now).total_seconds() <= 3600:
+            text = (
+                f"Напоминание: урок #{appt_id}\n"
+                f"Ученик: {fullname}\nПреподаватель: {teacher}\n"
+                f"Время: {date_iso} {time_slot}"
+            )
+            for aid in ADMIN_IDS:
+                bot.send_message(aid, text)
+            cursor.execute("UPDATE appointments SET reminder_sent=1 WHERE id = ?", (appt_id,))
+    conn.commit()
+    conn.close()
+
+def clean_past_appointments():
+    now_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        DELETE FROM appointments
+         WHERE status='approved'
+           AND datetime(date || ' ' || time) < ?
+    """, (now_str,))
+    conn.commit()
+    conn.close()
+
+# --------- Запуск планировщика и бота ---------
 if __name__ == '__main__':
     scheduler = BackgroundScheduler(timezone=TIMEZONE)
     scheduler.add_job(send_reminders, 'interval', minutes=1)
     scheduler.add_job(clean_past_appointments, 'cron', hour=0, minute=0)
     scheduler.start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-
