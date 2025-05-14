@@ -1,129 +1,230 @@
+from dotenv import load_dotenv
+load_dotenv()  # Загрузка .env
 
 import os
-import json
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from datetime import datetime, timedelta, date
+import sqlite3
+import logging
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from flask import Flask
+from threading import Thread
 
 import telebot
 from telebot import types
+from apscheduler.schedulers.background import BackgroundScheduler
 
-TZ = ZoneInfo("Asia/Tbilisi")
-PORT = int(os.getenv("PORT", 9999))
-DATA_DIR = "data"
-LANG_FILE = os.path.join(DATA_DIR, "lang.json")
-SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
-DEFAULT_LANG = "ru"
+# ---------------- ЛОГИРОВАНИЕ ----------------
+logging.basicConfig(level=logging.INFO)
+telebot.logger.setLevel(logging.DEBUG)
 
-ADMINS = {
-    7758773154: "joolay_vocal",
-    388183067:  "joolay_joolay"
-}
+# --- Мини-веб-сервер для health checks (Render Web Service) ---
+app = Flask(__name__)
 
-TEACHERS = {
-    "Юля":     {"wd": [1, 2, 3, 4], "hours": [f"{h}:00" for h in range(15, 21)]},
-    "Торнике": {"wd": [5, 6, 0],    "hours": [f"{h}:00" for h in range(8, 23)]}
-}
+@app.route("/")
+def ping():
+    return "OK", 200
 
-WD_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
-LANGUAGES = {"ru": "Русский 🇷🇺", "en": "English 🇬🇧"}
+def run_web():
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
 
-MESSAGES = {
-    "ru": {
-        "choose_lang": "👋 Привет! Выберите язык:",
-        "lang_set": "Язык установлен: {lang}",
-        "main_menu": "Главное меню:",
-        "btn_book": "📅 Записаться",
-        "btn_my": "👁 Моя запись",
-        "btn_cancel": "❌ Отменить запись",
-        "btn_admin": "🛠 Админка",
-        "choose_teacher": "Выберите преподавателя:",
-        "choose_week": "Выберите неделю:",
-        "choose_day": "Выберите день:",
-        "choose_time": "Выберите время:",
-        "enter_name": "Введите ваше имя:",
-        "pending": "⏳ Запись создана. Ожидайте подтверждения.",
-        "confirmed": "✅ Ваша запись подтверждена: {t} {d} {h}",
-        "cancel_q": "Вы уверены, что хотите отменить запись?",
-        "cancel_ok": "✅ Запись отменена.",
-        "no_booking": "У вас нет активных записей.",
-        "admin_notify": "🆕 Новая заявка: {t} {d} {h}\n👤 {n} (ID {u})"
-    },
-    "en": {
-        "choose_lang": "👋 Welcome! Choose your language:",
-        "lang_set": "Language set to: {lang}",
-        "main_menu": "Main menu:",
-        "btn_book": "📅 Book",
-        "btn_my": "👁 My booking",
-        "btn_cancel": "❌ Cancel booking",
-        "btn_admin": "🛠 Admin panel",
-        "choose_teacher": "Choose a teacher:",
-        "choose_week": "Choose week:",
-        "choose_day": "Choose a day:",
-        "choose_time": "Choose a time:",
-        "enter_name": "Enter your name:",
-        "pending": "⏳ Booking created. Await confirmation.",
-        "confirmed": "✅ Booking confirmed: {t} {d} {h}",
-        "cancel_q": "Are you sure you want to cancel your booking?",
-        "cancel_ok": "✅ Booking cancelled.",
-        "no_booking": "You have no active bookings.",
-        "admin_notify": "🆕 New booking: {t} {d} {h}\n👤 {n} (ID {u})"
-    }
-}
+Thread(target=run_web, daemon=True).start()
 
-os.makedirs(DATA_DIR, exist_ok=True)
-if not os.path.exists(LANG_FILE): json.dump({}, open(LANG_FILE, "w", encoding="utf-8"))
-if not os.path.exists(SCHEDULE_FILE): json.dump({}, open(SCHEDULE_FILE, "w", encoding="utf-8"))
+# ---------------- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ----------------
+TOKEN     = os.getenv("TOKEN")
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+DB_PATH   = os.getenv("DB_PATH", "vocal_lessons.db")
+TIMEZONE  = ZoneInfo(os.getenv("TIMEZONE", "Asia/Tbilisi"))
 
-def load_json(path): return json.load(open(path, "r", encoding="utf-8"))
-def save_json(path, data): json.dump(data, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-def get_lang(uid): return load_json(LANG_FILE).get(str(uid), DEFAULT_LANG)
-def txt(uid, key, **kwargs): return MESSAGES[get_lang(uid)][key].format(**kwargs)
+if not TOKEN or not ADMIN_IDS:
+    raise RuntimeError("Пожалуйста, заполните .env: TOKEN и ADMIN_IDS")
 
-bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
+# ---------------- TELEBOT SETUP ----------------
+bot = telebot.TeleBot(TOKEN)
+bot.remove_webhook()  # Сбрасываем старые webhooks, если были
 
-class HC(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
+# ---------------- ИНИЦИАЛИЗАЦИЯ БАЗЫ ----------------
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS appointments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        fullname TEXT,
+        phone TEXT,
+        teacher TEXT,
+        date TEXT,
+        time TEXT,
+        status TEXT DEFAULT 'pending',
+        reminder_sent INTEGER DEFAULT 0
+    )
+    """)
+    conn.commit()
+    conn.close()
 
-threading.Thread(target=lambda: HTTPServer(("0.0.0.0", PORT), HC).serve_forever(), daemon=True).start()
+init_db()
 
-# Напоминалка
-def start_reminder_loop():
-    def check_loop():
-        while True:
-            now = datetime.now(TZ)
-            sch = load_json(SCHEDULE_FILE)
-            changed = False
+# ---------------- ХРАНИЛИЩЕ ДЛЯ ДИАЛОГА ----------------
+user_data = {}
 
-            for teacher, days in sch.items():
-                for d, times in days.items():
-                    for h, info in times.items():
-                        if info["status"] == "confirmed":
-                            lesson_time = datetime.fromisoformat(f"{d}T{h}").replace(tzinfo=TZ)
-                            delta = (lesson_time - now).total_seconds()
-                            if 0 < delta <= 7200:
-                                try:
-                                    bot.send_message(
-                                        info["uid"],
-                                        f"🔔 Напоминание: через 2 часа у вас занятие с {teacher} в {h}",
-                                        reply_markup=None
-                                    )
-                                    info["status"] = "reminded"
-                                    changed = True
-                                except:
-                                    pass
+# ---------------- ФУНКЦИИ МЕНЮ ----------------
+def show_main_menu(chat_id):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    kb.add('📝 Записаться на урок', 'Моя запись', '📞 Контакты', '↩️ Назад')
+    bot.send_message(chat_id, "Привет! Выберите действие:", reply_markup=kb)
 
-            if changed:
-                save_json(SCHEDULE_FILE, sch)
+# ---------------- ОБРАБОТЧИКИ ----------------
+@bot.message_handler(commands=['start'])
+def cmd_start(message):
+    show_main_menu(message.chat.id)
 
-            threading.Event().wait(3600)
+@bot.message_handler(func=lambda m: m.text == '↩️ Назад')
+def handle_back(message):
+    show_main_menu(message.chat.id)
 
-    threading.Thread(target=check_loop, daemon=True).start()
+# Запись на урок
+@bot.message_handler(func=lambda m: m.text == '📝 Записаться на урок')
+def choose_teacher(message):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton('Юля', callback_data='select_teacher:Юля'),
+        types.InlineKeyboardButton('↩️ Назад', callback_data='back')
+    )
+    bot.send_message(message.chat.id, "Выберите преподавателя:", reply_markup=kb)
 
-# Заглушка вместо полной логики
-start_reminder_loop()
-bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+@bot.callback_query_handler(func=lambda c: c.data == 'back')
+def cb_back(call):
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, None)
+    show_main_menu(call.message.chat.id)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith('select_teacher:'))
+def cb_select_teacher(call):
+    teacher = call.data.split(':',1)[1]
+    uid = call.from_user.id
+    user_data[uid] = {'teacher': teacher}
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, None)
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add('↩️ Назад')
+    msg = bot.send_message(call.message.chat.id, "Введите ваше ФИО:", reply_markup=kb)
+    bot.answer_callback_query(call.id)
+    bot.register_next_step_handler(msg, process_name)
+
+def process_name(message):
+    if message.text == '↩️ Назад':
+        return handle_back(message)
+    uid = message.from_user.id
+    user_data[uid]['fullname'] = message.text.strip()
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add('↩️ Назад')
+    msg = bot.send_message(
+        message.chat.id,
+        "Оставьте ваш контакт TG или любой удобный контакт:",
+        reply_markup=kb
+    )
+    bot.register_next_step_handler(msg, process_phone)
+
+def process_phone(message):
+    if message.text == '↩️ Назад':
+        return handle_back(message)
+    uid = message.from_user.id
+    user_data[uid]['phone'] = message.text.strip()
+    send_date_selection(message)
+
+def send_date_selection(message):
+    today = datetime.now(TIMEZONE).date()
+    kb = types.InlineKeyboardMarkup(row_width=4)
+    for d in range(14):
+        day = today + timedelta(days=d)
+        if 1 <= day.weekday() <= 4:  # вт–пт
+            kb.add(
+                types.InlineKeyboardButton(
+                    day.strftime('%d/%m'),
+                    callback_data=f"select_date:{day.isoformat()}"
+                )
+            )
+    kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back'))
+    bot.send_message(message.chat.id, "Выберите дату:", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith('select_date:'))
+def cb_select_date(call):
+    if call.data == 'back':
+        return cb_back(call)
+    date_iso = call.data.split(':',1)[1]
+    uid = call.from_user.id
+    user_data[uid]['date'] = date_iso
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, None)
+    kb = types.InlineKeyboardMarkup(row_width=4)
+    for hour in range(14, 23):
+        slot = f"{hour:02d}:00"
+        kb.add(types.InlineKeyboardButton(slot, callback_data=f"select_time:{slot}"))
+    kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back'))
+    bot.send_message(call.message.chat.id, "Выберите время:", reply_markup=kb)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith('select_time:'))
+def cb_select_time(call):
+    if call.data == 'back':
+        return cb_back(call)
+    time_slot = call.data.split(':',1)[1]
+    uid = call.from_user.id
+    user_data[uid]['time'] = time_slot
+    finalize_appointment(call.message)
+
+# Сохранение и уведомление
+def finalize_appointment(message):
+    uid = message.chat.id
+    data = user_data.get(uid, {})
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO appointments
+      (user_id, fullname, phone, teacher, date, time)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        uid,
+        data.get('fullname',''),
+        data.get('phone',''),
+        data.get('teacher',''),
+        data.get('date',''),
+        data.get('time','')
+    ))
+    appt_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    bot.send_message(
+        uid,
+        "Ваша заявка отправлена. Ожидайте подтверждения.",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+    # Уведомление админам
+    text = (
+        f"Новая заявка #{appt_id}\n"
+        f"Ученик: {data.get('fullname')}\n"
+        f"Контакт: {data.get('phone')}\n"
+        f"Преподаватель: {data.get('teacher')}\n"
+        f"Дата: {data.get('date')} в {data.get('time')}"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton('✅ Одобрить', callback_data=f"admin_approve:{appt_id}"),
+        types.InlineKeyboardButton('❌ Отклонить', callback_data=f"admin_reject:{appt_id}")
+    )
+    for aid in ADMIN_IDS:
+        bot.send_message(aid, text, reply_markup=kb)
+
+# Админ-решения и остальные handlers…
+# (Здесь нужно вставить остальной код из предыдущей версии —
+#  approve/reject, my appointments, cancel flow, reminders, cleanup)
+
+# ------- ПРАВИЛЬНЫЙ ЗАПУСК -------
+if __name__ == '__main__':
+    scheduler = BackgroundScheduler(timezone=TIMEZONE)
+    scheduler.add_job(send_reminders, 'interval', minutes=1)
+    scheduler.add_job(clean_past_appointments, 'cron', hour=0, minute=0)
+    scheduler.start()
+    bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+
