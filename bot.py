@@ -20,6 +20,7 @@ telebot.logger.setLevel(logging.DEBUG)
 
 # ---------------- Мини-веб-сервер для health checks ----------------
 app = Flask(__name__)
+
 @app.route("/")
 def ping():
     return "OK", 200
@@ -28,6 +29,7 @@ def run_web():
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
+# запускаем Flask в отдельном потоке, чтобы Render Website не засыпал
 Thread(target=run_web, daemon=True).start()
 
 # ---------------- Переменные окружения ----------------
@@ -82,10 +84,6 @@ def cmd_start(msg):
 @bot.message_handler(func=lambda m: m.text == '📞 Контакты')
 def show_contacts(msg):
     text = (
-        "<b>Контакты:</b>\n"
-        "📞 Телефон: +995 123 456 789\n"
-        "✉️ Email: example@joolay.vocal\n"
-        "\n🔴🔴🔴🔴🔴🔴🔴🔴🔴\n\n"
         "<b>Преподаватели:</b>\n"
         " • <b>Юля</b>\n"
         " • <b>Торнике</b>\n\n"
@@ -100,7 +98,7 @@ def show_contacts(msg):
         disable_web_page_preview=True,
         reply_markup=types.ReplyKeyboardRemove()
     )
-    # вернём меню после показа
+    # возвращаем главное меню
     show_main_menu(msg.chat.id)
 
 # ---------------- Бронирование урока ----------------
@@ -284,7 +282,7 @@ if __name__ == '__main__':
     # сбросим вебхук, чтобы точно работать через getUpdates
     bot.delete_webhook()
 
-    # непрерывный polling с защитой от ошибок 409 и любых других
+    # непрерывный polling с автоматическим рестартом при ошибках и длинным таймаутом
     while True:
         try:
             bot.infinity_polling(
