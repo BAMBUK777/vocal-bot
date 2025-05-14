@@ -17,9 +17,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 logging.basicConfig(level=logging.INFO)
 telebot.logger.setLevel(logging.DEBUG)
 
-# --- Мини-веб-сервер для health checks (Render Web Service) ---
+# ---------------- Мини-веб-сервер для health checks ----------------
 app = Flask(__name__)
-
 @app.route("/")
 def ping():
     return "OK", 200
@@ -30,7 +29,7 @@ def run_web():
 
 Thread(target=run_web, daemon=True).start()
 
-# ---------------- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ----------------
+# ---------------- Переменные окружения ----------------
 TOKEN     = os.getenv("TOKEN")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 DB_PATH   = os.getenv("DB_PATH", "vocal_lessons.db")
@@ -39,15 +38,15 @@ TIMEZONE  = ZoneInfo(os.getenv("TIMEZONE", "Asia/Tbilisi"))
 if not TOKEN or not ADMIN_IDS:
     raise RuntimeError("Пожалуйста, заполните .env: TOKEN и ADMIN_IDS")
 
-# ---------------- TELEBOT SETUP ----------------
+# ---------------- Настройка TeleBot ----------------
 bot = telebot.TeleBot(TOKEN)
-bot.remove_webhook()  # сбрасываем возможный старый webhook
+bot.remove_webhook()  # сброс старых webhooks
 
-# ---------------- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ----------------
+# ---------------- Инициализация БД ----------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
+    c = conn.cursor()
+    c.execute("""
     CREATE TABLE IF NOT EXISTS appointments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -65,73 +64,73 @@ def init_db():
 
 init_db()
 
-# --------- ХРАНИЛИЩЕ ДАННЫХ ДИАЛОГА ---------
+# ---------------- Хранилище промежуточных данных ----------------
 user_data = {}
 
-# --------- ФУНКЦИИ МЕНЮ ---------
+# ---------------- Меню ----------------
 def show_main_menu(chat_id):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     kb.add('📝 Записаться на урок', 'Моя запись', '📞 Контакты', '↩️ Назад')
     bot.send_message(chat_id, "Привет! Выберите действие:", reply_markup=kb)
 
-# --------- ОБРАБОТЧИКИ СООБЩЕНИЙ ---------
 @bot.message_handler(commands=['start'])
-def cmd_start(message):
-    show_main_menu(message.chat.id)
+def cmd_start(msg):
+    show_main_menu(msg.chat.id)
 
 @bot.message_handler(func=lambda m: m.text == '↩️ Назад')
-def handle_back(message):
-    show_main_menu(message.chat.id)
+def handle_back(msg):
+    show_main_menu(msg.chat.id)
 
+# ---------------- Бронирование урока ----------------
 @bot.message_handler(func=lambda m: m.text == '📝 Записаться на урок')
-def choose_teacher(message):
+def choose_teacher(msg):
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton('Юля', callback_data='select_teacher:Юля'),
         types.InlineKeyboardButton('↩️ Назад', callback_data='back')
     )
-    bot.send_message(message.chat.id, "Выберите преподавателя:", reply_markup=kb)
+    bot.send_message(msg.chat.id, "Выберите преподавателя:", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data == 'back')
-def cb_back(call):
-    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, None)
-    show_main_menu(call.message.chat.id)
-    bot.answer_callback_query(call.id)
+def cb_back(c):
+    bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, None)
+    show_main_menu(c.message.chat.id)
+    bot.answer_callback_query(c.id)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('select_teacher:'))
-def cb_select_teacher(call):
-    teacher = call.data.split(':',1)[1]
-    uid = call.from_user.id
+def cb_select_teacher(c):
+    teacher = c.data.split(':',1)[1]
+    uid = c.from_user.id
     user_data[uid] = {'teacher': teacher}
-    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, None)
+    bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, None)
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add('↩️ Назад')
-    msg = bot.send_message(call.message.chat.id, "Введите ваше ФИО:", reply_markup=kb)
-    bot.answer_callback_query(call.id)
-    bot.register_next_step_handler(msg, process_name)
+    m = bot.send_message(c.message.chat.id, "Введите ваше ФИО:", reply_markup=kb)
+    bot.answer_callback_query(c.id)
+    bot.register_next_step_handler(m, process_name)
 
-def process_name(message):
-    if message.text == '↩️ Назад':
-        return handle_back(message)
-    uid = message.from_user.id
-    user_data[uid]['fullname'] = message.text.strip()
+def process_name(msg):
+    if msg.text == '↩️ Назад':
+        return handle_back(msg)
+    uid = msg.from_user.id
+    user_data[uid]['fullname'] = msg.text.strip()
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add('↩️ Назад')
-    msg = bot.send_message(
-        message.chat.id,
+    m = bot.send_message(
+        msg.chat.id,
         "Оставьте ваш контакт TG или любой удобный контакт:",
         reply_markup=kb
     )
-    bot.register_next_step_handler(msg, process_phone)
+    bot.register_next_step_handler(m, process_phone)
 
-def process_phone(message):
-    if message.text == '↩️ Назад':
-        return handle_back(message)
-    uid = message.from_user.id
-    user_data[uid]['phone'] = message.text.strip()
-    send_date_selection(message)
+def process_phone(msg):
+    if msg.text == '↩️ Назад':
+        return handle_back(msg)
+    uid = msg.from_user.id
+    user_data[uid]['phone'] = msg.text.strip()
+    send_date_selection(msg)
 
-def send_date_selection(message):
+def send_date_selection(msg):
     today = datetime.now(TIMEZONE).date()
     kb = types.InlineKeyboardMarkup(row_width=4)
     for d in range(14):
@@ -142,119 +141,120 @@ def send_date_selection(message):
                 callback_data=f"select_date:{day.isoformat()}"
             ))
     kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back'))
-    bot.send_message(message.chat.id, "Выберите дату:", reply_markup=kb)
+    bot.send_message(msg.chat.id, "Выберите дату:", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('select_date:'))
-def cb_select_date(call):
-    if call.data == 'back':
-        return cb_back(call)
-    date_iso = call.data.split(':',1)[1]
-    uid = call.from_user.id
+def cb_select_date(c):
+    if c.data == 'back':
+        return cb_back(c)
+    date_iso = c.data.split(':',1)[1]
+    uid = c.from_user.id
     user_data[uid]['date'] = date_iso
-    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, None)
+    bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, None)
     kb = types.InlineKeyboardMarkup(row_width=4)
     for hour in range(14, 23):
         slot = f"{hour:02d}:00"
         kb.add(types.InlineKeyboardButton(slot, callback_data=f"select_time:{slot}"))
     kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back'))
-    bot.send_message(call.message.chat.id, "Выберите время:", reply_markup=kb)
-    bot.answer_callback_query(call.id)
+    bot.send_message(c.message.chat.id, "Выберите время:", reply_markup=kb)
+    bot.answer_callback_query(c.id)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('select_time:'))
-def cb_select_time(call):
-    if call.data == 'back':
-        return cb_back(call)
-    time_slot = call.data.split(':',1)[1]
-    uid = call.from_user.id
-    user_data[uid]['time'] = time_slot
-    finalize_appointment(call.message)
+def cb_select_time(c):
+    if c.data == 'back':
+        return cb_back(c)
+    slot = c.data.split(':',1)[1]
+    uid = c.from_user.id
+    user_data[uid]['time'] = slot
+    finalize_appointment(c.message)
 
-def finalize_appointment(message):
-    uid = message.chat.id
-    data = user_data.get(uid, {})
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
+def finalize_appointment(msg):
+    uid = msg.chat.id
+    d = user_data.get(uid, {})
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("""
         INSERT INTO appointments
-          (user_id, fullname, phone, teacher, date, time)
+        (user_id, fullname, phone, teacher, date, time)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        uid,
-        data.get('fullname',''),
-        data.get('phone',''),
-        data.get('teacher',''),
-        data.get('date',''),
-        data.get('time','')
-    ))
-    appt_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
+    """, (uid, d['fullname'], d['phone'], d['teacher'], d['date'], d['time']))
+    appt_id = cur.lastrowid
+    conn.commit(); conn.close()
 
-    bot.send_message(
-        uid,
-        "Ваша заявка отправлена. Ожидайте подтверждения.",
-        reply_markup=types.ReplyKeyboardRemove()
-    )
+    bot.send_message(uid, "Ваша заявка отправлена. Ожидайте подтверждения.",
+                     reply_markup=types.ReplyKeyboardRemove())
 
-    text = (
-        f"Новая заявка #{appt_id}\n"
-        f"Ученик: {data.get('fullname')}\n"
-        f"Контакт: {data.get('phone')}\n"
-        f"Преподаватель: {data.get('teacher')}\n"
-        f"Дата: {data.get('date')} в {data.get('time')}"
-    )
+    text = (f"Новая заявка #{appt_id}\n"
+            f"Ученик: {d['fullname']}\n"
+            f"Контакт: {d['phone']}\n"
+            f"Преподаватель: {d['teacher']}\n"
+            f"Дата: {d['date']} в {d['time']}")
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton('✅ Одобрить', callback_data=f"admin_approve:{appt_id}"),
-        types.InlineKeyboardButton('❌ Отклонить', callback_data=f"admin_reject:{appt_id}")
+        types.InlineKeyboardButton('❌ Отклонить',  callback_data=f"admin_reject:{appt_id}")
     )
     for aid in ADMIN_IDS:
         bot.send_message(aid, text, reply_markup=kb)
 
-# --------- Обработка решений админа, «Моя запись», отмены и Контактов
-# (должны идти здесь, как в предыдущей версии кода)...
+# ---------------- Обработка админских кнопок ----------------
+@bot.callback_query_handler(func=lambda c: c.data.startswith('admin_'))
+def process_admin_decision(call: types.CallbackQuery):
+    action, appt_id = call.data.split(':',1)
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("SELECT user_id, date, time FROM appointments WHERE id = ?", (appt_id,))
+    row = cur.fetchone()
+    if not row:
+        bot.answer_callback_query(call.id, "❌ Запись не найдена.")
+        conn.close()
+        return
+    user_id, date_iso, time_slot = row
+    if action == 'admin_approve':
+        cur.execute("UPDATE appointments SET status='approved' WHERE id = ?", (appt_id,))
+        conn.commit()
+        bot.send_message(user_id, f"✅ Ваша запись на {date_iso} в {time_slot} подтверждена.")
+        bot.answer_callback_query(call.id, "Запись одобрена.")
+    else:
+        cur.execute("DELETE FROM appointments WHERE id = ?", (appt_id,))
+        conn.commit()
+        bot.send_message(user_id, "❌ Ваша запись отклонена.")
+        bot.answer_callback_query(call.id, "Запись отклонена.")
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    conn.close()
 
-# --------- Напоминания и очистка старых записей ---------
+# ---------------- Напоминания и очистка ----------------
 def send_reminders():
     now = datetime.now(TIMEZONE)
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("""
         SELECT id, fullname, teacher, date, time
           FROM appointments
          WHERE status='approved' AND reminder_sent=0
     """)
-    for appt_id, fullname, teacher, date_iso, time_slot in cursor.fetchall():
-        dt = datetime.strptime(f"{date_iso} {time_slot}", "%Y-%m-%d %H:%M")\
-                    .replace(tzinfo=TIMEZONE)
+    for appt_id, fullname, teacher, date_iso, time_slot in cur.fetchall():
+        dt = datetime.fromisoformat(f"{date_iso}T{time_slot}").replace(tzinfo=TIMEZONE)
         if 0 <= (dt - now).total_seconds() <= 3600:
-            text = (
-                f"Напоминание: урок #{appt_id}\n"
-                f"Ученик: {fullname}\nПреподаватель: {teacher}\n"
-                f"Время: {date_iso} {time_slot}"
-            )
+            text = (f"⏰ Напоминание: урок #{appt_id}\n"
+                    f"Ученик: {fullname}\nПреподаватель: {teacher}\n"
+                    f"Время: {date_iso} {time_slot}")
             for aid in ADMIN_IDS:
                 bot.send_message(aid, text)
-            cursor.execute("UPDATE appointments SET reminder_sent=1 WHERE id = ?", (appt_id,))
-    conn.commit()
-    conn.close()
+            cur.execute("UPDATE appointments SET reminder_sent=1 WHERE id = ?", (appt_id,))
+    conn.commit(); conn.close()
 
 def clean_past_appointments():
-    now_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
+    cutoff = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("""
         DELETE FROM appointments
          WHERE status='approved'
            AND datetime(date || ' ' || time) < ?
-    """, (now_str,))
-    conn.commit()
-    conn.close()
+    """, (cutoff,))
+    conn.commit(); conn.close()
 
-# --------- Запуск планировщика и бота ---------
+# ---------------- Запуск планировщика и polling ----------------
 if __name__ == '__main__':
-    scheduler = BackgroundScheduler(timezone=TIMEZONE)
-    scheduler.add_job(send_reminders, 'interval', minutes=1)
-    scheduler.add_job(clean_past_appointments, 'cron', hour=0, minute=0)
-    scheduler.start()
+    sched = BackgroundScheduler(timezone=TIMEZONE)
+    sched.add_job(send_reminders, 'interval', minutes=1)
+    sched.add_job(clean_past_appointments, 'cron', hour=0, minute=0)
+    sched.start()
     bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
