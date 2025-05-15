@@ -70,7 +70,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
             fullname TEXT,
-            last_success TIMESTAMP
+            last_success TIMESTAMP,
+            is_special BOOL DEFAULT FALSE
         )
     """)
     # materials
@@ -113,13 +114,20 @@ user_data = {}
 # ------------------- ГЛАВНОЕ МЕНЮ -------------------
 def show_main_menu(chat_id):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add('📝 Записаться на урок', 'Моя запись')
+    kb.add('📝 Записаться на урок', '📋 Мои записи')
     kb.add('🌈 Доп. материалы', '📞 Контакты')
-    kb.add('🏠 Главное меню')
-    bot.send_message(chat_id, "✨ Главное меню. Выберите действие:", reply_markup=kb)
+    bot.send_message(chat_id, "✨ Главное меню. Что делаем дальше?", reply_markup=kb)
 
+# ------------------- ПРИВЕТСТВИЕ -------------------
 @bot.message_handler(commands=['start'])
 def cmd_start(msg):
+    text = (
+        "Привет! 👋\n\n"
+        "Это <b>Joolay Vocal Studio</b>. Я помогу тебе записаться на урок, посмотреть свои записи, а ещё — "
+        "открою доступ к секретным материалам для своих! 😉\n\n"
+        "Если что-то непонятно — просто напиши, я рядом."
+    )
+    bot.send_message(msg.chat.id, text, parse_mode='HTML')
     show_main_menu(msg.chat.id)
 
 @bot.message_handler(func=lambda m: m.text == '🏠 Главное меню')
@@ -131,31 +139,41 @@ def main_menu(msg):
 def show_contacts(msg):
     text = (
         "👩‍🏫 <b>Преподаватели:</b>\n"
-        "• Юля\n"
-        "• Торнике\n\n"
+        "• <a href=\"https://t.me/joolay_joolay\">Юля</a>\n"
+        "• <a href=\"https://t.me/tornik_e\">Торнике</a>\n"
+        "• <b>Марина</b> <i>(расписание в разработке)</i>\n\n"
+        "🤝 <b>Вопросы/Реклама:</b> <a href=\"https://t.me/joolay_vocal\">@joolay_vocal</a> <i>[biz]</i>\n\n"
         "🏢 <b>Адрес:</b>\n"
         "Joolay Vocal Studio\n"
         "2/7, Zaarbriuken Square, Tbilisi\n"
         "📍 <a href=\"https://maps.app.goo.gl/XtXSVWX2exaRmHpp9\">На карте</a>"
     )
     bot.send_message(msg.chat.id, text, parse_mode='HTML', disable_web_page_preview=True)
-    show_main_menu(msg.chat.id)
 
-# ------------------- ДОП. МАТЕРИАЛЫ -------------------
+# ------------------- ДОП. МАТЕРИАЛЫ (ТОЛЬКО ДЛЯ “ИЗБРАННЫХ”) -------------------
 @bot.message_handler(func=lambda m: m.text == '🌈 Доп. материалы')
 def show_materials(msg):
+    uid = msg.from_user.id
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT title, url, category FROM materials ORDER BY id")
-    materials = cur.fetchall()
+    cur.execute("SELECT is_special FROM users WHERE user_id=%s", (uid,))
+    row = cur.fetchone()
     conn.close()
-    if not materials:
-        bot.send_message(msg.chat.id, "⏳ Раздел в разработке, скоро появятся полезные материалы.")
+    if row and row['is_special']:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT title, url, category FROM materials ORDER BY id")
+        materials = cur.fetchall()
+        conn.close()
+        if not materials:
+            bot.send_message(msg.chat.id, "⏳ Раздел в разработке, скоро появятся полезные материалы.")
+        else:
+            text = "🎓 <b>Дополнительные материалы:</b>\n\n"
+            for t, url, cat in materials:
+                text += f"• <a href=\"{url}\">{t}</a>\n"
+            bot.send_message(msg.chat.id, text, parse_mode='HTML', disable_web_page_preview=True)
     else:
-        text = "🎓 <b>Дополнительные материалы:</b>\n\n"
-        for t, url, cat in materials:
-            text += f"• <a href=\"{url}\">{t}</a>\n"
-        bot.send_message(msg.chat.id, text, parse_mode='HTML', disable_web_page_preview=True)
+        bot.send_message(msg.chat.id, "🌈 Этот раздел доступен только постоянным ученикам, прошедшим хотя бы 1 урок.")
     show_main_menu(msg.chat.id)
 
 # ------------------- ЗАПИСЬ НА УРОК -------------------
@@ -164,24 +182,20 @@ def choose_teacher(msg):
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(types.InlineKeyboardButton('Юля', callback_data='teacher:Юля'))
     kb.add(types.InlineKeyboardButton('Торнике', callback_data='teacher:Торнике'))
-    kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back_menu'))
-    bot.send_message(msg.chat.id, "👩‍🏫 К кому хотите записаться?", reply_markup=kb)
-
-@bot.callback_query_handler(func=lambda c: c.data == 'back_menu')
-def back_menu(c):
-    bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, None)
-    show_main_menu(c.message.chat.id)
-    bot.answer_callback_query(c.id)
+    kb.add(types.InlineKeyboardButton('Марина (в разработке)', callback_data='teacher:Марина'))
+    bot.send_message(msg.chat.id, "К какому преподавателю хочешь записаться?", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('teacher:'))
 def cb_teacher(c):
     teacher = c.data.split(':', 1)[1]
     uid = c.from_user.id
+    if teacher == "Марина":
+        bot.answer_callback_query(c.id, "Расписание Марины скоро появится 🛠")
+        return
     user_data[uid] = {'teacher': teacher}
-    bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, None)
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add('↩️ Назад')
-    m = bot.send_message(c.message.chat.id, "✏️ Введите ваше ФИО:", reply_markup=kb)
+    m = bot.send_message(c.message.chat.id, "Как тебя зовут? (ФИО)", reply_markup=kb)
     bot.register_next_step_handler(m, process_name)
 
 def process_name(msg):
@@ -191,7 +205,7 @@ def process_name(msg):
     user_data[uid]['fullname'] = msg.text.strip()
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add('↩️ Назад')
-    m = bot.send_message(msg.chat.id, "📱 Укажите контакт для связи (телеграм, телефон и т.д.):", reply_markup=kb)
+    m = bot.send_message(msg.chat.id, "Оставь свой контакт (телега или номер):", reply_markup=kb)
     bot.register_next_step_handler(m, process_phone)
 
 def process_phone(msg):
@@ -217,7 +231,13 @@ def send_date_selection(msg):
                 day.strftime('%d/%m'), callback_data=f"date:{day.isoformat()}"
             ))
     kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back_menu'))
-    bot.send_message(msg.chat.id, "📅 Выберите дату:", reply_markup=kb)
+    bot.send_message(msg.chat.id, "Выбери дату:", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data == 'back_menu')
+def back_menu(c):
+    bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, None)
+    show_main_menu(c.message.chat.id)
+    bot.answer_callback_query(c.id)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('date:'))
 def cb_date(c):
@@ -236,7 +256,7 @@ def cb_date(c):
             slot = f"{hour:02d}:00"
             kb.add(types.InlineKeyboardButton(slot, callback_data=f"time:{slot}"))
     kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back_menu'))
-    bot.send_message(c.message.chat.id, "⏰ Выберите время:", reply_markup=kb)
+    bot.send_message(c.message.chat.id, "Выбери время:", reply_markup=kb)
     bot.answer_callback_query(c.id)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('time:'))
@@ -258,15 +278,15 @@ def finalize_appointment(msg):
     """, (uid, d['fullname'], d['phone'], d['teacher'], d['date'], d['time']))
     appt_id = cur.fetchone()[0]
     conn.commit()
-    # Добавляем пользователя, если нет
+    # Добавляем пользователя (или обновляем ФИО)
     cur.execute("""
         INSERT INTO users (user_id, fullname) VALUES (%s, %s)
-        ON CONFLICT (user_id) DO NOTHING
+        ON CONFLICT (user_id) DO UPDATE SET fullname=EXCLUDED.fullname
     """, (uid, d['fullname']))
     conn.commit()
     conn.close()
 
-    bot.send_message(uid, "✅ Ваша заявка отправлена! Ожидайте подтверждения.")
+    bot.send_message(uid, "✅ Ты записан(а) на урок! Как только админ подтвердит — пришлю напоминание за 1 час 😊")
     text = (
         f"🎉 Новая заявка #{appt_id}\n"
         f"👤 {d['fullname']}\n"
@@ -283,112 +303,90 @@ def finalize_appointment(msg):
         bot.send_message(aid, text, reply_markup=kb)
     show_main_menu(uid)
 
-# ------------------- МОЯ ЗАПИСЬ / ОТМЕНА -------------------
-@bot.message_handler(func=lambda m: m.text == 'Моя запись')
-def my_appointment(msg):
-    uid = msg.from_user.id
+# ------------------- АДМИНСКОЕ ОДОБРЕНИЕ/ОТКЛОНЕНИЕ -------------------
+@bot.callback_query_handler(func=lambda c: c.data.startswith('admin_approve:') or c.data.startswith('admin_reject:'))
+def process_admin_decision(c):
+    data = c.data
+    appt_id = data.split(':', 1)[1]
+
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT id, teacher, date, time, status FROM appointments
-        WHERE user_id=%s AND status IN ('pending','approved') ORDER BY created_at DESC LIMIT 1
-    """, (uid,))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        bot.send_message(msg.chat.id, "ℹ️ У вас нет активных записей.")
-        show_main_menu(msg.chat.id)
-        return
-    appt_id, teacher, date, time_slot, status = row
-    status_str = "⏳ Ожидает подтверждения" if status == "pending" else "✅ Подтверждена"
-    kb = types.InlineKeyboardMarkup()
-    if status == "approved":
-        kb.add(types.InlineKeyboardButton('🚫 Запросить отмену', callback_data=f"cancel_request:{appt_id}"))
-    bot.send_message(msg.chat.id, f"🗓 Ваша запись:\n\n🧑‍🏫 {teacher}\n📅 {date} {time_slot}\nСтатус: {status_str}", reply_markup=kb)
-    show_main_menu(msg.chat.id)
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith('cancel_request:'))
-def cancel_request(c):
-    appt_id = c.data.split(':',1)[1]
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton('Да, отменить', callback_data=f"confirm_cancel:{appt_id}"))
-    kb.add(types.InlineKeyboardButton('Нет, оставить', callback_data="back_menu"))
-    bot.send_message(c.from_user.id, "❓ Вы уверены, что хотите отменить запись?", reply_markup=kb)
-    bot.answer_callback_query(c.id)
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith('confirm_cancel:'))
-def confirm_cancel(c):
-    appt_id = c.data.split(':',1)[1]
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("UPDATE appointments SET status='cancel_requested', updated_at=NOW() WHERE id=%s", (appt_id,))
-    conn.commit()
-    conn.close()
-    # Отправить запрос админу
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        types.InlineKeyboardButton('✅ Подтвердить отмену', callback_data=f"admin_cancel_ok:{appt_id}"),
-        types.InlineKeyboardButton('❌ Отклонить', callback_data=f"admin_cancel_no:{appt_id}")
-    )
-    for aid in ADMIN_IDS:
-        bot.send_message(aid, f"❗️ Запрос на отмену записи #{appt_id}", reply_markup=kb)
-    bot.send_message(c.from_user.id, "⏳ Запрос на отмену отправлен админу. Ждите ответа.")
-    show_main_menu(c.from_user.id)
-    bot.answer_callback_query(c.id)
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith('admin_cancel_ok:') or c.data.startswith('admin_cancel_no:'))
-def process_cancel_admin(c):
-    appt_id = c.data.split(':',1)[1]
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM appointments WHERE id=%s", (appt_id,))
+    cur.execute("SELECT user_id, teacher, date, time, fullname FROM appointments WHERE id=%s", (appt_id,))
     row = cur.fetchone()
     if not row:
         bot.answer_callback_query(c.id, "Запись не найдена!")
         conn.close()
         return
-    user_id = row['user_id']
-    if c.data.startswith('admin_cancel_ok:'):
+
+    user_id, teacher, date, time_slot, fullname = row['user_id'], row['teacher'], row['date'], row['time'], row['fullname']
+    if data.startswith('admin_approve:'):
+        cur.execute("UPDATE appointments SET status='approved', updated_at=NOW() WHERE id=%s", (appt_id,))
+        # Ставим is_special=True если первый раз проходит урок
+        cur.execute("""
+            UPDATE users SET is_special=TRUE WHERE user_id=%s
+        """, (user_id,))
+        conn.commit()
+        bot.send_message(user_id, "✅ Урок подтверждён! До встречи 👋")
+        bot.answer_callback_query(c.id, "Заявка одобрена.")
+        # Напоминание преподавателю
+        teacher_notify = {
+            "Юля": 388183067,       # id чата, можно руками заменить на нужный
+            "Торнике": 123456789,   # заменить на id Торнике
+            "Марина": None          # пока не нужен
+        }
+        # Отправляем только если id указан (иначе просто не отправляем)
+        tid = teacher_notify.get(teacher)
+        if tid:
+            t_text = (
+                f"⏰ Напоминание: Через час урок!\n"
+                f"Ученик: {fullname}\n"
+                f"Дата: {date} {time_slot}"
+            )
+            bot.send_message(tid, t_text)
+        # Запускаем отложенное напоминание пользователю и преподавателю за 1 час (псевдо-реализация)
+        def schedule_reminder():
+            appt_time = datetime.combine(date, datetime.strptime(time_slot, "%H:%M").time()).replace(tzinfo=TIMEZONE)
+            now = datetime.now(TIMEZONE)
+            delay = (appt_time - now - timedelta(hours=1)).total_seconds()
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                bot.send_message(user_id, f"⏰ Через час твой урок у преподавателя {teacher}! Не забудь 🤗")
+                if tid:
+                    bot.send_message(tid, f"⏰ Через час у тебя урок с {fullname} ({date} {time_slot})")
+            except Exception as ex:
+                print(f"Ошибка отправки напоминания: {ex}")
+        Thread(target=schedule_reminder, daemon=True).start()
+    else:
         cur.execute("UPDATE appointments SET status='cancelled', updated_at=NOW() WHERE id=%s", (appt_id,))
         conn.commit()
-        bot.send_message(user_id, "❌ Ваша запись отменена по вашему запросу.")
-        bot.answer_callback_query(c.id, "Отмена подтверждена.")
-    else:
-        cur.execute("UPDATE appointments SET status='approved', updated_at=NOW() WHERE id=%s", (appt_id,))
-        conn.commit()
-        bot.send_message(user_id, "❗️ Отмена записи отклонена администратором.")
-        bot.answer_callback_query(c.id, "Отмена отклонена.")
+        bot.send_message(user_id, "❌ Запись отклонена админом. Можно попробовать выбрать другое время.")
+        bot.answer_callback_query(c.id, "Заявка отклонена.")
     conn.close()
 
-# ------------------- АДМИН-ПАНЕЛЬ -------------------
-@bot.message_handler(func=lambda m: m.from_user.id in ADMIN_IDS and m.text and "админ" in m.text.lower())
-def admin_panel(msg):
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("🗑 Удалить запись по ID", "🏠 Главное меню")
-    bot.send_message(msg.chat.id, "👮‍♂️ Админ-панель:\nВыберите действие.", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.from_user.id in ADMIN_IDS and m.text == "🗑 Удалить запись по ID")
-def admin_delete_prompt(msg):
-    m = bot.send_message(msg.chat.id, "Введите ID записи для удаления:")
-    bot.register_next_step_handler(m, admin_delete_by_id)
-
-def admin_delete_by_id(msg):
-    if not msg.text.isdigit():
-        bot.send_message(msg.chat.id, "ID должен быть числом!")
-        return
-    appt_id = int(msg.text)
+# ------------------- МОИ ЗАПИСИ -------------------
+@bot.message_handler(func=lambda m: m.text == '📋 Мои записи')
+def my_appointments(msg):
+    uid = msg.from_user.id
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT user_id FROM appointments WHERE id=%s", (appt_id,))
-    row = cur.fetchone()
-    if not row:
-        bot.send_message(msg.chat.id, "Запись с таким ID не найдена.")
-        conn.close()
-        return
-    cur.execute("DELETE FROM appointments WHERE id=%s", (appt_id,))
-    conn.commit()
+    cur.execute("""
+        SELECT id, teacher, date, time, status FROM appointments
+        WHERE user_id=%s ORDER BY created_at DESC LIMIT 3
+    """, (uid,))
+    rows = cur.fetchall()
     conn.close()
-    bot.send_message(msg.chat.id, f"Запись #{appt_id} удалена.")
+    if not rows:
+        bot.send_message(msg.chat.id, "У тебя нет активных записей.")
+        show_main_menu(msg.chat.id)
+        return
+    text = "🗓 <b>Твои ближайшие записи:</b>\n\n"
+    for row in rows:
+        appt_id, teacher, date, time_slot, status = row
+        status_str = "⏳ Ожидает подтверждения" if status == "pending" else "✅ Подтверждена" if status == "approved" else "❌ Отменена"
+        text += f"• {teacher} — {date} {time_slot} ({status_str})\n"
+    bot.send_message(msg.chat.id, text, parse_mode='HTML')
+    show_main_menu(msg.chat.id)
 
 # ------------------- ОШИБКИ и СТАРТ -------------------
 @bot.message_handler(func=lambda m: True)
