@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-load_dotenv()  # загружаем переменные из .env
+load_dotenv()
 
 import os
 import time
@@ -14,11 +14,11 @@ import telebot
 from telebot import types
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# ---------------- ЛОГИРОВАНИЕ ----------------
+# --- ЛОГИРОВАНИЕ ---
 logging.basicConfig(level=logging.INFO)
 telebot.logger.setLevel(logging.DEBUG)
 
-# ---------------- Мини-веб-сервер для health checks ----------------
+# --- Мини-веб-сервер для Render ---
 app = Flask(__name__)
 
 @app.route("/")
@@ -29,10 +29,9 @@ def run_web():
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
-# Чтобы Render не засыпал — держим HTTP-сервер постоянно живым
 Thread(target=run_web, daemon=True).start()
 
-# ---------------- Переменные окружения ----------------
+# --- Переменные окружения ---
 TOKEN     = os.getenv("TOKEN")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 DB_PATH   = os.getenv("DB_PATH", "vocal_lessons.db")
@@ -41,11 +40,11 @@ TIMEZONE  = ZoneInfo(os.getenv("TIMEZONE", "Asia/Tbilisi"))
 if not TOKEN or not ADMIN_IDS:
     raise RuntimeError("Пожалуйста, заполните .env: TOKEN и ADMIN_IDS")
 
-# ---------------- Настройка TeleBot ----------------
+# --- Настройка TeleBot ---
 bot = telebot.TeleBot(TOKEN)
-bot.remove_webhook()  # на всякий — сбросим старый webhook
+bot.remove_webhook()
 
-# ---------------- Инициализация БД ----------------
+# --- Инициализация БД ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -67,10 +66,9 @@ def init_db():
 
 init_db()
 
-# ---------------- Хранилище промежуточных данных ----------------
 user_data = {}
 
-# ---------------- Главное меню ----------------
+# --- Главное меню ---
 def show_main_menu(chat_id):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     kb.add('📝 Записаться на урок', 'Моя запись', '📞 Контакты')
@@ -80,7 +78,7 @@ def show_main_menu(chat_id):
 def cmd_start(msg):
     show_main_menu(msg.chat.id)
 
-# ---------------- Контакты ----------------
+# --- Контакты ---
 @bot.message_handler(func=lambda m: m.text == '📞 Контакты')
 def show_contacts(msg):
     text = (
@@ -100,7 +98,7 @@ def show_contacts(msg):
     )
     show_main_menu(msg.chat.id)
 
-# ---------------- Бронирование урока ----------------
+# --- Бронирование урока ---
 @bot.message_handler(func=lambda m: m.text == '📝 Записаться на урок')
 def choose_teacher(msg):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -148,33 +146,44 @@ def process_phone(msg):
         return show_main_menu(msg.chat.id)
     uid = msg.from_user.id
     user_data[uid]['phone'] = msg.text.strip()
-    send_date_selection(msg)
+    send_date_selection(msg, user_data[uid]['teacher'])
 
-def send_date_selection(msg):
+def send_date_selection(msg, teacher):
     today = datetime.now(TIMEZONE).date()
     kb = types.InlineKeyboardMarkup(row_width=4)
     for d in range(14):
         day = today + timedelta(days=d)
-        if 1 <= day.weekday() <= 4:  # вт–пт
+        wd = day.weekday()
+        # Юля: вт(1), ср(2), чт(3), пт(4)
+        # Торнике: пн(0), пт(4), сб(5), вс(6)
+        if (
+            (teacher == 'Юля' and wd in [1,2,3,4])
+            or (teacher == 'Торнике' and wd in [0,4,5,6])
+        ):
             kb.add(types.InlineKeyboardButton(
                 day.strftime('%d/%m'),
-                callback_data=f"select_date:{day.isoformat()}"
+                callback_data=f"select_date:{teacher}:{day.isoformat()}"
             ))
     kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back'))
     bot.send_message(msg.chat.id, "Выберите дату:", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('select_date:'))
 def cb_select_date(c):
-    if c.data == 'back':
-        return cb_back(c)
-    date_iso = c.data.split(':',1)[1]
+    _, teacher, date_iso = c.data.split(':',2)
     uid = c.from_user.id
     user_data[uid]['date'] = date_iso
+    user_data[uid]['teacher'] = teacher
     bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, None)
+    # Часы: у Юли 15–21, у Торнике 8–24
     kb = types.InlineKeyboardMarkup(row_width=4)
-    for hour in range(14, 23):
-        slot = f"{hour:02d}:00"
-        kb.add(types.InlineKeyboardButton(slot, callback_data=f"select_time:{slot}"))
+    if teacher == 'Юля':
+        for hour in range(15, 22):
+            slot = f"{hour:02d}:00"
+            kb.add(types.InlineKeyboardButton(slot, callback_data=f"select_time:{slot}"))
+    else:
+        for hour in range(8, 25):
+            slot = f"{hour:02d}:00"
+            kb.add(types.InlineKeyboardButton(slot, callback_data=f"select_time:{slot}"))
     kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back'))
     bot.send_message(c.message.chat.id, "Выберите время:", reply_markup=kb)
     bot.answer_callback_query(c.id)
@@ -216,7 +225,7 @@ def finalize_appointment(msg):
     for aid in ADMIN_IDS:
         bot.send_message(aid, text, reply_markup=kb)
 
-# ---------------- Обработка админских кнопок ----------------
+# --- Обработка админских кнопок ---
 @bot.callback_query_handler(func=lambda c: c.data.startswith('admin_'))
 def process_admin_decision(call: types.CallbackQuery):
     action, appt_id = call.data.split(':',1)
@@ -241,7 +250,7 @@ def process_admin_decision(call: types.CallbackQuery):
     bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
     conn.close()
 
-# ---------------- Напоминания и очистка ----------------
+# --- Напоминания и очистка ---
 def send_reminders():
     now = datetime.now(TIMEZONE)
     conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
@@ -271,7 +280,7 @@ def clean_past_appointments():
     """, (cutoff,))
     conn.commit(); conn.close()
 
-# ---------------- Запуск планировщика и polling ----------------
+# --- Запуск планировщика и polling ---
 if __name__ == '__main__':
     sched = BackgroundScheduler(timezone=TIMEZONE)
     sched.add_job(send_reminders, 'interval', minutes=1)
@@ -279,8 +288,6 @@ if __name__ == '__main__':
     sched.start()
 
     bot.delete_webhook()
-
-    # теперь без лишнего non_stop — запускаем вечно с автоперезапуском
     while True:
         try:
             bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
