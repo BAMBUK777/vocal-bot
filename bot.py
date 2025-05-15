@@ -70,7 +70,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
             fullname TEXT,
-            last_success DATETIME
+            last_success TIMESTAMP
         )
     """)
     # materials
@@ -91,7 +91,6 @@ init_db()
 def preload_materials():
     conn = get_conn()
     cur = conn.cursor()
-    # Если таблица пуста — добавляем
     cur.execute("SELECT count(*) FROM materials")
     if cur.fetchone()[0] == 0:
         materials = [
@@ -117,7 +116,7 @@ def show_main_menu(chat_id):
     kb.add('📝 Записаться на урок', 'Моя запись')
     kb.add('🌈 Доп. материалы', '📞 Контакты')
     kb.add('🏠 Главное меню')
-    bot.send_message(chat_id, "✨ Выберите действие:", reply_markup=kb)
+    bot.send_message(chat_id, "✨ Главное меню. Выберите действие:", reply_markup=kb)
 
 @bot.message_handler(commands=['start'])
 def cmd_start(msg):
@@ -140,6 +139,23 @@ def show_contacts(msg):
         "📍 <a href=\"https://maps.app.goo.gl/XtXSVWX2exaRmHpp9\">На карте</a>"
     )
     bot.send_message(msg.chat.id, text, parse_mode='HTML', disable_web_page_preview=True)
+    show_main_menu(msg.chat.id)
+
+# ------------------- ДОП. МАТЕРИАЛЫ -------------------
+@bot.message_handler(func=lambda m: m.text == '🌈 Доп. материалы')
+def show_materials(msg):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT title, url, category FROM materials ORDER BY id")
+    materials = cur.fetchall()
+    conn.close()
+    if not materials:
+        bot.send_message(msg.chat.id, "⏳ Раздел в разработке, скоро появятся полезные материалы.")
+    else:
+        text = "🎓 <b>Дополнительные материалы:</b>\n\n"
+        for t, url, cat in materials:
+            text += f"• <a href=\"{url}\">{t}</a>\n"
+        bot.send_message(msg.chat.id, text, parse_mode='HTML', disable_web_page_preview=True)
     show_main_menu(msg.chat.id)
 
 # ------------------- ЗАПИСЬ НА УРОК -------------------
@@ -192,10 +208,8 @@ def send_date_selection(msg):
     kb = types.InlineKeyboardMarkup(row_width=4)
     if teacher == "Торнике":
         days = [0, 4, 5, 6]  # пн, пт, сб, вс
-        work_hours = range(8, 24)
     else:
         days = [1, 2, 3, 4]  # вт, ср, чт, пт
-        work_hours = range(15, 21)
     for d in range(14):
         day = today + timedelta(days=d)
         if day.weekday() in days:
@@ -338,4 +352,53 @@ def process_cancel_admin(c):
         cur.execute("UPDATE appointments SET status='cancelled', updated_at=NOW() WHERE id=%s", (appt_id,))
         conn.commit()
         bot.send_message(user_id, "❌ Ваша запись отменена по вашему запросу.")
-        bot.answer_callback_query
+        bot.answer_callback_query(c.id, "Отмена подтверждена.")
+    else:
+        cur.execute("UPDATE appointments SET status='approved', updated_at=NOW() WHERE id=%s", (appt_id,))
+        conn.commit()
+        bot.send_message(user_id, "❗️ Отмена записи отклонена администратором.")
+        bot.answer_callback_query(c.id, "Отмена отклонена.")
+    conn.close()
+
+# ------------------- АДМИН-ПАНЕЛЬ -------------------
+@bot.message_handler(func=lambda m: m.from_user.id in ADMIN_IDS and m.text and "админ" in m.text.lower())
+def admin_panel(msg):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("🗑 Удалить запись по ID", "🏠 Главное меню")
+    bot.send_message(msg.chat.id, "👮‍♂️ Админ-панель:\nВыберите действие.", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.from_user.id in ADMIN_IDS and m.text == "🗑 Удалить запись по ID")
+def admin_delete_prompt(msg):
+    m = bot.send_message(msg.chat.id, "Введите ID записи для удаления:")
+    bot.register_next_step_handler(m, admin_delete_by_id)
+
+def admin_delete_by_id(msg):
+    if not msg.text.isdigit():
+        bot.send_message(msg.chat.id, "ID должен быть числом!")
+        return
+    appt_id = int(msg.text)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM appointments WHERE id=%s", (appt_id,))
+    row = cur.fetchone()
+    if not row:
+        bot.send_message(msg.chat.id, "Запись с таким ID не найдена.")
+        conn.close()
+        return
+    cur.execute("DELETE FROM appointments WHERE id=%s", (appt_id,))
+    conn.commit()
+    conn.close()
+    bot.send_message(msg.chat.id, f"Запись #{appt_id} удалена.")
+
+# ------------------- ОШИБКИ и СТАРТ -------------------
+@bot.message_handler(func=lambda m: True)
+def fallback(msg):
+    show_main_menu(msg.chat.id)
+
+if __name__ == '__main__':
+    while True:
+        try:
+            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            logging.error(f"Polling упал: {e}")
+            time.sleep(3)
