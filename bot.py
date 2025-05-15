@@ -14,11 +14,11 @@ import telebot
 from telebot import types
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# --- ЛОГИРОВАНИЕ ---
+# ---------------- ЛОГИРОВАНИЕ ----------------
 logging.basicConfig(level=logging.INFO)
 telebot.logger.setLevel(logging.DEBUG)
 
-# --- Мини-веб-сервер для Render ---
+# ---------------- Мини-веб-сервер для health checks ----------------
 app = Flask(__name__)
 
 @app.route("/")
@@ -31,7 +31,7 @@ def run_web():
 
 Thread(target=run_web, daemon=True).start()
 
-# --- Переменные окружения ---
+# ---------------- Переменные окружения ----------------
 TOKEN     = os.getenv("TOKEN")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 DB_PATH   = os.getenv("DB_PATH", "vocal_lessons.db")
@@ -40,11 +40,11 @@ TIMEZONE  = ZoneInfo(os.getenv("TIMEZONE", "Asia/Tbilisi"))
 if not TOKEN or not ADMIN_IDS:
     raise RuntimeError("Пожалуйста, заполните .env: TOKEN и ADMIN_IDS")
 
-# --- Настройка TeleBot ---
+# ---------------- Настройка TeleBot ----------------
 bot = telebot.TeleBot(TOKEN)
 bot.remove_webhook()
 
-# --- Инициализация БД ---
+# ---------------- Инициализация БД ----------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -68,17 +68,28 @@ init_db()
 
 user_data = {}
 
-# --- Главное меню ---
+# ---------------- Главное меню ----------------
 def show_main_menu(chat_id):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add('📝 Записаться на урок', 'Моя запись', '📞 Контакты')
+    kb.add('📝 Записаться на урок', 'Моя запись', '📚 Курсы', '📞 Контакты')
     bot.send_message(chat_id, "Привет! Выберите действие:", reply_markup=kb)
 
 @bot.message_handler(commands=['start'])
 def cmd_start(msg):
     show_main_menu(msg.chat.id)
 
-# --- Контакты ---
+# ---------------- Курсы ----------------
+@bot.message_handler(func=lambda m: m.text == '📚 Курсы')
+def show_courses(msg):
+    bot.send_message(
+        msg.chat.id,
+        "✨ Раздел <b>Курсы</b> в разработке.\n"
+        "Скоро здесь появятся видеоуроки и полезные материалы! 🦄",
+        parse_mode='HTML'
+    )
+    show_main_menu(msg.chat.id)
+
+# ---------------- Контакты ----------------
 @bot.message_handler(func=lambda m: m.text == '📞 Контакты')
 def show_contacts(msg):
     text = (
@@ -98,7 +109,7 @@ def show_contacts(msg):
     )
     show_main_menu(msg.chat.id)
 
-# --- Бронирование урока ---
+# ---------------- Бронирование урока ----------------
 @bot.message_handler(func=lambda m: m.text == '📝 Записаться на урок')
 def choose_teacher(msg):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -146,44 +157,45 @@ def process_phone(msg):
         return show_main_menu(msg.chat.id)
     uid = msg.from_user.id
     user_data[uid]['phone'] = msg.text.strip()
-    send_date_selection(msg, user_data[uid]['teacher'])
+    send_date_selection(msg)
 
-def send_date_selection(msg, teacher):
+def send_date_selection(msg):
+    uid = msg.from_user.id
+    teacher = user_data[uid]['teacher']
     today = datetime.now(TIMEZONE).date()
     kb = types.InlineKeyboardMarkup(row_width=4)
+    days_map = {
+        'Юля': [1,2,3,4],      # вт, ср, чт, пт
+        'Торнике': [0,4,5,6],  # пн, пт, сб, вс
+    }
     for d in range(14):
         day = today + timedelta(days=d)
-        wd = day.weekday()
-        # Юля: вт(1), ср(2), чт(3), пт(4)
-        # Торнике: пн(0), пт(4), сб(5), вс(6)
-        if (
-            (teacher == 'Юля' and wd in [1,2,3,4])
-            or (teacher == 'Торнике' and wd in [0,4,5,6])
-        ):
+        if day.weekday() in days_map.get(teacher, []):
             kb.add(types.InlineKeyboardButton(
                 day.strftime('%d/%m'),
-                callback_data=f"select_date:{teacher}:{day.isoformat()}"
+                callback_data=f"select_date:{day.isoformat()}"
             ))
     kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back'))
     bot.send_message(msg.chat.id, "Выберите дату:", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('select_date:'))
 def cb_select_date(c):
-    _, teacher, date_iso = c.data.split(':',2)
+    if c.data == 'back':
+        return cb_back(c)
+    date_iso = c.data.split(':',1)[1]
     uid = c.from_user.id
     user_data[uid]['date'] = date_iso
-    user_data[uid]['teacher'] = teacher
     bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, None)
-    # Часы: у Юли 15–21, у Торнике 8–24
+    # Теперь время — по преподавателю
+    teacher = user_data[uid]['teacher']
     kb = types.InlineKeyboardMarkup(row_width=4)
     if teacher == 'Юля':
-        for hour in range(15, 22):
-            slot = f"{hour:02d}:00"
-            kb.add(types.InlineKeyboardButton(slot, callback_data=f"select_time:{slot}"))
+        hours = range(15, 22)  # 15:00–21:00
     else:
-        for hour in range(8, 25):
-            slot = f"{hour:02d}:00"
-            kb.add(types.InlineKeyboardButton(slot, callback_data=f"select_time:{slot}"))
+        hours = range(8, 24+1)  # 8:00–24:00
+    for hour in hours:
+        slot = f"{hour:02d}:00"
+        kb.add(types.InlineKeyboardButton(slot, callback_data=f"select_time:{slot}"))
     kb.add(types.InlineKeyboardButton('↩️ Назад', callback_data='back'))
     bot.send_message(c.message.chat.id, "Выберите время:", reply_markup=kb)
     bot.answer_callback_query(c.id)
@@ -225,7 +237,72 @@ def finalize_appointment(msg):
     for aid in ADMIN_IDS:
         bot.send_message(aid, text, reply_markup=kb)
 
-# --- Обработка админских кнопок ---
+# ---------------- "Моя запись" и отмена ----------------
+@bot.message_handler(func=lambda m: m.text == 'Моя запись')
+def my_appointment(msg):
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("""
+        SELECT id, teacher, date, time, status FROM appointments
+        WHERE user_id=? ORDER BY id DESC LIMIT 1
+    """, (msg.from_user.id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        bot.send_message(msg.chat.id, "У вас пока нет записей.", reply_markup=types.ReplyKeyboardRemove())
+        show_main_menu(msg.chat.id)
+        return
+    appt_id, teacher, date, time_slot, status = row
+    if status == 'pending':
+        st = "⏳ На рассмотрении"
+        can_cancel = False
+    elif status == 'approved':
+        st = "✅ Подтверждена"
+        can_cancel = True
+    else:
+        st = "❌ Отклонена/удалена"
+        can_cancel = False
+    text = (
+        f"Ваша запись:\n"
+        f"👩‍🏫 Преподаватель: {teacher}\n"
+        f"📅 Дата: {date} в {time_slot}\n"
+        f"Статус: {st}"
+    )
+    kb = types.InlineKeyboardMarkup()
+    if can_cancel:
+        kb.add(types.InlineKeyboardButton("Отменить запись", callback_data=f"user_cancel:{appt_id}"))
+    bot.send_message(msg.chat.id, text, reply_markup=kb if can_cancel else None)
+    show_main_menu(msg.chat.id)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("user_cancel:"))
+def user_cancel_ask(c):
+    appt_id = c.data.split(":")[1]
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("Да, отменить", callback_data=f"user_cancel_confirm:{appt_id}"),
+        types.InlineKeyboardButton("Нет", callback_data="cancel_no")
+    )
+    bot.send_message(c.from_user.id, "Вы уверены, что хотите отменить запись?", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("user_cancel_confirm:"))
+def user_cancel_real(c):
+    appt_id = c.data.split(":")[1]
+    # статус менять на отклонена
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("SELECT user_id FROM appointments WHERE id=?",(appt_id,))
+    row = cur.fetchone()
+    if not row:
+        bot.send_message(c.from_user.id, "Запись не найдена.")
+        return
+    cur.execute("UPDATE appointments SET status='cancelled' WHERE id=?", (appt_id,))
+    conn.commit(); conn.close()
+    bot.send_message(c.from_user.id, "Ваша запись отменена.")
+    bot.answer_callback_query(c.id, "Отменено!")
+
+@bot.callback_query_handler(func=lambda c: c.data == "cancel_no")
+def user_cancel_no(c):
+    bot.answer_callback_query(c.id, "Отмена отмены записи.")
+
+# ---------------- Обработка админских кнопок ----------------
 @bot.callback_query_handler(func=lambda c: c.data.startswith('admin_'))
 def process_admin_decision(call: types.CallbackQuery):
     action, appt_id = call.data.split(':',1)
@@ -242,15 +319,84 @@ def process_admin_decision(call: types.CallbackQuery):
         conn.commit()
         bot.send_message(user_id, f"✅ Ваша запись на {date_iso} в {time_slot} подтверждена.")
         bot.answer_callback_query(call.id, "Запись одобрена.")
-    else:
-        cur.execute("DELETE FROM appointments WHERE id = ?", (appt_id,))
+    elif action == 'admin_reject':
+        cur.execute("UPDATE appointments SET status='rejected' WHERE id = ?", (appt_id,))
         conn.commit()
         bot.send_message(user_id, "❌ Ваша запись отклонена.")
         bot.answer_callback_query(call.id, "Запись отклонена.")
     bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
     conn.close()
 
-# --- Напоминания и очистка ---
+# ---------------- Админ-панель ----------------
+@bot.message_handler(commands=['admin'])
+def admin_panel(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        bot.send_message(msg.chat.id, "Нет доступа.")
+        return
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("Посмотреть все записи", callback_data="admin_view_all"))
+    bot.send_message(msg.chat.id, "⚙️ Админ-панель:", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data == "admin_view_all")
+def admin_view_all(c):
+    if c.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(c.id, "Нет доступа.")
+        return
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("""
+        SELECT id, fullname, phone, teacher, date, time, status
+        FROM appointments
+        ORDER BY date, time
+        LIMIT 30
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    if not rows:
+        bot.send_message(c.from_user.id, "Нет записей.")
+        return
+    for appt in rows:
+        appt_id, fullname, phone, teacher, date, time, status = appt
+        text = (
+            f"<b>#{appt_id}</b> | {status}\n"
+            f"👤 {fullname}\n"
+            f"📱 {phone}\n"
+            f"👩‍🏫 {teacher}\n"
+            f"📅 {date} {time}"
+        )
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(types.InlineKeyboardButton("❌ Удалить", callback_data=f"admin_delete:{appt_id}"))
+        bot.send_message(c.from_user.id, text, parse_mode="HTML", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("admin_delete:"))
+def admin_delete_confirm(c):
+    if c.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(c.id, "Нет доступа.")
+        return
+    appt_id = c.data.split(":")[1]
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("Да, удалить", callback_data=f"admin_delete_real:{appt_id}"),
+        types.InlineKeyboardButton("Нет", callback_data="admin_no_delete")
+    )
+    bot.send_message(c.from_user.id, f"Удалить запись #{appt_id}?", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("admin_delete_real:"))
+def admin_delete_real(c):
+    if c.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(c.id, "Нет доступа.")
+        return
+    appt_id = c.data.split(":")[1]
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("DELETE FROM appointments WHERE id = ?", (appt_id,))
+    conn.commit(); conn.close()
+    bot.send_message(c.from_user.id, f"✅ Запись #{appt_id} удалена.")
+    bot.answer_callback_query(c.id, "Удалено!")
+
+@bot.callback_query_handler(func=lambda c: c.data == "admin_no_delete")
+def admin_no_delete(c):
+    bot.answer_callback_query(c.id, "Удаление отменено.")
+
+# ---------------- Напоминания и очистка ----------------
 def send_reminders():
     now = datetime.now(TIMEZONE)
     conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
@@ -271,16 +417,16 @@ def send_reminders():
     conn.commit(); conn.close()
 
 def clean_past_appointments():
-    cutoff = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(TIMEZONE)
     conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
     cur.execute("""
         DELETE FROM appointments
-         WHERE status='approved'
+         WHERE status IN ('approved', 'cancelled', 'rejected')
            AND datetime(date || ' ' || time) < ?
-    """, (cutoff,))
+    """, (now.strftime("%Y-%m-%d %H:%M:%S"),))
     conn.commit(); conn.close()
 
-# --- Запуск планировщика и polling ---
+# ---------------- Запуск планировщика и polling ----------------
 if __name__ == '__main__':
     sched = BackgroundScheduler(timezone=TIMEZONE)
     sched.add_job(send_reminders, 'interval', minutes=1)
