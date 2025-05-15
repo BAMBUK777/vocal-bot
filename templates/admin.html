@@ -1,0 +1,45 @@
+<!-- templates/admin.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Админка Joolay</title>
+    <style>
+        body { font-family: Arial; margin: 40px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; }
+        tr:nth-child(even){background-color: #f2f2f2;}
+        a { color: #007bff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h2>Админ-панель</h2>
+    <table>
+        <tr>
+            <th>ID</th><th>ФИО</th><th>Телефон</th><th>Учитель</th>
+            <th>Дата</th><th>Время</th><th>Статус</th><th>Действие</th>
+        </tr>
+        {% for appt in appts %}
+        <tr>
+            <td>{{ appt.id }}</td>
+            <td>{{ appt.fullname }}</td>
+            <td>{{ appt.phone }}</td>
+            <td>{{ appt.teacher }}</td>
+            <td>{{ appt.date }}</td>
+            <td>{{ appt.time }}</td>
+            <td>{{ appt.status }}</td>
+            <td>
+                {% if appt.status == 'pending' %}
+                    <a href="{{ url_for('admin_action', appt_id=appt.id, action='approve') }}">Одобрить</a> | 
+                    <a href="{{ url_for('admin_action', appt_id=appt.id, action='reject') }}">Отклонить</a>
+                {% elif appt.status == 'approved' %}
+                    <a href="{{ url_for('admin_action', appt_id=appt.id, action='cancel') }}">Отменить</a>
+                {% else %}
+                    -
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
